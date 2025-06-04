@@ -196,15 +196,24 @@ pipeline {
                     echo "🔍 Verificando versión de Java en pom.xml..."
                     grep -n "<java.version>" pom.xml || echo "No se encontró java.version"
 
-                    # IMPORTANTE: Agregar flag para habilitar características de preview en Java 21
+                    # IMPORTANTE: Configurar opciones para Java 21 preview features
                     if [ "${params.JAVA_VERSION}" = "21" ]; then
-                        MAVEN_FLAGS="\$MAVEN_FLAGS --enable-preview"
-                        echo "🔧 Habilitando características de preview para Java 21"
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.compiler.release=21 -Dmaven.compiler.source=21 -Dmaven.compiler.target=21"
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.compiler.args=--enable-preview"
+                        echo "🔧 Configurando para características de preview de Java 21"
                     fi
 
                     # Compilar con la versión de Java especificada en el pom.xml
                     echo "📝 Ejecutando: ./mvnw -B clean package \$MAVEN_FLAGS"
                     ./mvnw -B clean package \$MAVEN_FLAGS
+
+                    # Si el comando anterior falla, intentamos con una versión que omite el javadoc
+                    if [ $? -ne 0 ]; then
+                        echo "⚠️ Primer intento de compilación falló, intentando con opciones alternativas..."
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.javadoc.skip=true"
+                        echo "📝 Ejecutando: ./mvnw -B clean package \$MAVEN_FLAGS"
+                        ./mvnw -B clean package \$MAVEN_FLAGS
+                    fi
 
                     # Verificar JAR
                     if [ -f target/${env.JAR_NAME} ]; then
@@ -341,7 +350,7 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=${env.SERVICE_PATH}
-ExecStart=/usr/bin/java --enable-preview -jar ${env.SERVICE_PATH}/app.jar \\
+ExecStart=/usr/bin/java -jar --enable-preview ${env.SERVICE_PATH}/app.jar \\
     --spring.profiles.active=${env.DEPLOY_ENV} \\
     --logging.level.root=INFO \\
     --logging.file.name=${env.SERVICE_PATH}/${env.SERVICE_NAME}.log
