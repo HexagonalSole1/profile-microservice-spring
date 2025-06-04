@@ -1,17 +1,14 @@
 package com.vallhalatech.profile_service.web.controller;
 
-import com.vallhalatech.profile_service.persistence.entities.Product;
 import com.vallhalatech.profile_service.service.IProductService;
 
 import com.vallhalatech.profile_service.web.dtos.product.request.*;
 import com.vallhalatech.profile_service.web.dtos.response.BaseResponse;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import jakarta.validation.Valid;
-import java.util.List;
 
 @RestController
 @RequestMapping("/products")

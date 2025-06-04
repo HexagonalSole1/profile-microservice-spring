@@ -1,7 +1,6 @@
 package com.vallhalatech.profile_service.service;
 
 
-import com.vallhalatech.profile_service.persistence.entities.Product;
 import com.vallhalatech.profile_service.web.dtos.product.request.ProductRequest;
 import com.vallhalatech.profile_service.web.dtos.response.BaseResponse;
 import org.springframework.stereotype.Service;
