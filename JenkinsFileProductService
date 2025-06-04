@@ -19,12 +19,12 @@ pipeline {
     parameters {
         string(
             name: 'SERVICE_NAME',
-            defaultValue: 'profile-service',
+            defaultValue: 'product-service',
             description: 'Nombre del microservicio'
         )
         string(
             name: 'JAR_NAME',
-            defaultValue: 'profile-service-0.0.1-SNAPSHOT.jar',
+            defaultValue: 'product-service-0.0.1-SNAPSHOT.jar',
             description: 'Nombre del archivo JAR'
         )
         choice(
@@ -34,8 +34,8 @@ pipeline {
         )
         choice(
             name: 'JAVA_VERSION',
-            choices: ['17', '21', '11'],
-            description: 'Versión de Java a usar'
+            choices: ['21', '17', '11'],
+            description: 'Versión de Java a usar (el código requiere Java 21)'
         )
         booleanParam(
             name: 'SKIP_TESTS',
@@ -59,7 +59,7 @@ pipeline {
         // Credenciales
         SSH_KEY = credentials('ssh-key-ec2')
 
-        // Variables para profile-service
+        // Variables para el servicio
         SERVICE_NAME = "${params.SERVICE_NAME}"
         JAR_NAME = "${params.JAR_NAME}"
         SERVICE_PATH = "/home/ubuntu/${params.SERVICE_NAME}"
@@ -104,9 +104,18 @@ pipeline {
                         env.NEED_APPROVAL = params.TARGET_ENVIRONMENT == 'prod' ? 'true' : 'false'
                     }
 
+                    // Verificar si no es Java 21
+                    if (params.JAVA_VERSION != "21") {
+                        echo """
+⚠️ [ADVERTENCIA] Este proyecto requiere Java 21 para compilar correctamente.
+   Estás usando Java ${params.JAVA_VERSION} lo que puede causar errores.
+   Se recomienda cambiar el parámetro JAVA_VERSION a 21.
+"""
+                    }
+
                     // Mostrar configuración final
                     echo """
-🔧 [PROFILE-SERVICE] CONFIGURACIÓN:
+🔧 [PRODUCT-SERVICE] CONFIGURACIÓN:
    • Servicio: ${env.SERVICE_NAME}
    • JAR: ${env.JAR_NAME}
    • Rama detectada: ${env.GIT_BRANCH_NAME}
@@ -136,37 +145,42 @@ pipeline {
                             downloadUrl = "https://github.com/adoptium/temurin11-binaries/releases/download/jdk-11.0.21%2B9/OpenJDK11U-jdk_x64_linux_hotspot_11.0.21_9.tar.gz"
                             break
                         default:
-                            downloadUrl = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.9%2B9/OpenJDK17U-jdk_x64_linux_hotspot_17.0.9_9.tar.gz"
+                            downloadUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jdk_x64_linux_hotspot_21.0.2_13.tar.gz"
                     }
 
-                    echo "🔧 [PROFILE-SERVICE] Configurando JDK ${javaVersion}..."
+                    echo "🔧 [PRODUCT-SERVICE] Configurando JDK ${javaVersion}..."
                     sh """
                         mkdir -p \${JDK_DIR}
 
                         if [ ! -f \${JDK_DIR}/bin/java ]; then
-                            echo "📥 [PROFILE-SERVICE] Descargando JDK ${javaVersion}..."
+                            echo "📥 [PRODUCT-SERVICE] Descargando JDK ${javaVersion}..."
                             wget -q "${downloadUrl}" -O jdk.tar.gz
                             tar -xzf jdk.tar.gz -C \${JDK_DIR} --strip-components=1
                             rm jdk.tar.gz
-                            echo "✅ [PROFILE-SERVICE] JDK ${javaVersion} instalado"
+                            echo "✅ [PRODUCT-SERVICE] JDK ${javaVersion} instalado"
                         else
-                            echo "✅ [PROFILE-SERVICE] JDK ${javaVersion} ya existe"
+                            echo "✅ [PRODUCT-SERVICE] JDK ${javaVersion} ya existe"
                         fi
 
-                        echo "☕ [PROFILE-SERVICE] Java version:"
+                        echo "☕ [PRODUCT-SERVICE] Java version:"
                         \${JDK_DIR}/bin/java -version
                     """
                 }
             }
         }
 
-        stage('🔨 Build Profile Service') {
+        stage('🔨 Build Product Service') {
             steps {
                 sh """
                     export JAVA_HOME=\${JDK_DIR}
                     export PATH=\${JAVA_HOME}/bin:\$PATH
 
-                    echo "🔨 [PROFILE-SERVICE] Compilando aplicación..."
+                    echo "🔨 [PRODUCT-SERVICE] Compilando aplicación..."
+
+                    # Verificar versión de Java
+                    echo "☕ Java version utilizada para compilar:"
+                    java -version
+                    echo "JAVA_HOME=\$JAVA_HOME"
 
                     # Dar permisos de ejecución a mvnw
                     chmod +x ./mvnw
@@ -178,16 +192,35 @@ pipeline {
                         echo "⏩ Tests deshabilitados"
                     fi
 
-                    # Compilar
-                    echo "📝 Ejecutando: ./mvnw clean package \$MAVEN_FLAGS"
-                    ./mvnw clean package \$MAVEN_FLAGS
+                    # Verificar pom.xml para Java 21
+                    echo "🔍 Verificando versión de Java en pom.xml..."
+                    grep -n "<java.version>" pom.xml || echo "No se encontró java.version"
+
+                    # IMPORTANTE: Configurar opciones para Java 21 preview features
+                    if [ "${params.JAVA_VERSION}" == "21" ]; then
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.compiler.release=21 -Dmaven.compiler.source=21 -Dmaven.compiler.target=21"
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.compiler.args=--enable-preview"
+                        echo "🔧 Configurando para características de preview de Java 21"
+                    fi
+
+                    # Compilar con la versión de Java especificada en el pom.xml
+                    echo "📝 Ejecutando: ./mvnw -B clean package \$MAVEN_FLAGS"
+                    ./mvnw -B clean package \$MAVEN_FLAGS
+
+                    # Si el comando anterior falla, intentamos con una versión que omite el javadoc
+                    if [ \$? -ne 0 ]; then
+                        echo "⚠️ Primer intento de compilación falló, intentando con opciones alternativas..."
+                        MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.javadoc.skip=true"
+                        echo "📝 Ejecutando: ./mvnw -B clean package \$MAVEN_FLAGS"
+                        ./mvnw -B clean package \$MAVEN_FLAGS
+                    fi
 
                     # Verificar JAR
                     if [ -f target/${env.JAR_NAME} ]; then
-                        echo "✅ [PROFILE-SERVICE] JAR creado exitosamente"
+                        echo "✅ [PRODUCT-SERVICE] JAR creado exitosamente"
                         ls -lh target/${env.JAR_NAME}
                     else
-                        echo "❌ [PROFILE-SERVICE] Error: JAR no encontrado en la ruta esperada"
+                        echo "❌ [PRODUCT-SERVICE] Error: JAR no encontrado en la ruta esperada"
                         echo "🔍 Buscando JAR..."
                         find target -name "*.jar" -not -name "*-sources.jar" -not -name "*-javadoc.jar"
                         exit 1
@@ -203,7 +236,7 @@ pipeline {
             steps {
                 script {
                     echo """
-🚨 [PROFILE-SERVICE] APROBACIÓN REQUERIDA PARA PRODUCCIÓN
+🚨 [PRODUCT-SERVICE] APROBACIÓN REQUERIDA PARA PRODUCCIÓN
 
 📋 Información del Deploy:
    • Servicio: ${env.SERVICE_NAME}
@@ -226,16 +259,16 @@ pipeline {
                         )
 
                         if (approval != 'Aprobar') {
-                            error("❌ [PROFILE-SERVICE] Deploy a producción rechazado")
+                            error("❌ [PRODUCT-SERVICE] Deploy a producción rechazado")
                         }
 
-                        echo "✅ [PROFILE-SERVICE] Deploy a producción APROBADO"
+                        echo "✅ [PRODUCT-SERVICE] Deploy a producción APROBADO"
                     }
                 }
             }
         }
 
-        stage('🚀 Deploy Profile Service') {
+        stage('🚀 Deploy Product Service') {
             when {
                 expression { return env.DEPLOY_ENV != 'none' }
             }
@@ -252,11 +285,11 @@ pipeline {
                         EC2_IP = env.EC2_IP_DEV
                     }
 
-                    echo "🚀 [PROFILE-SERVICE] Desplegando en ${env.DEPLOY_ENV.toUpperCase()} (${EC2_IP})"
+                    echo "🚀 [PRODUCT-SERVICE] Desplegando en ${env.DEPLOY_ENV.toUpperCase()} (${EC2_IP})"
 
                     // 1. Preparar servidor
                     sh """
-                    echo "🔧 [PROFILE-SERVICE] Preparando servidor..."
+                    echo "🔧 [PRODUCT-SERVICE] Preparando servidor..."
                     ssh -i \$SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=30 ${EC2_USER}@${EC2_IP} '
                         # Crear directorios
                         sudo mkdir -p ${env.SERVICE_PATH}
@@ -267,18 +300,26 @@ pipeline {
                         which netstat > /dev/null || sudo apt-get install -y net-tools
 
                         # Instalar Java si no existe
-                        if ! which java > /dev/null; then
-                            echo "☕ [PROFILE-SERVICE] Instalando Java ${params.JAVA_VERSION}..."
-                            sudo apt-get update -qq && sudo apt-get install -y openjdk-${params.JAVA_VERSION}-jre-headless
+                        if ! which java > /dev/null || ! java -version 2>&1 | grep -q "version \\"21"; then
+                            echo "☕ [PRODUCT-SERVICE] Instalando Java 21..."
+                            # Java 21 puede no estar disponible en apt, usar binarios
+                            curl -sL https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jre_x64_linux_hotspot_21.0.2_13.tar.gz -o /tmp/jdk21.tar.gz
+                            sudo mkdir -p /opt/java/jdk21
+                            sudo tar -xzf /tmp/jdk21.tar.gz -C /opt/java/jdk21 --strip-components=1
+                            sudo update-alternatives --install /usr/bin/java java /opt/java/jdk21/bin/java 2100
+                            rm /tmp/jdk21.tar.gz
                         fi
 
-                        echo "✅ [PROFILE-SERVICE] Servidor preparado"
+                        # Verificar versión de Java instalada
+                        java -version
+
+                        echo "✅ [PRODUCT-SERVICE] Servidor preparado"
                     '
                     """
 
                     // 2. Detener servicio existente
                     sh """
-                    echo "🛑 [PROFILE-SERVICE] Deteniendo servicio existente..."
+                    echo "🛑 [PRODUCT-SERVICE] Deteniendo servicio existente..."
                     ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} '
                         if sudo systemctl is-active --quiet ${env.SERVICE_NAME}.service 2>/dev/null; then
                             echo "🛑 Deteniendo servicio ${env.SERVICE_NAME}..."
@@ -287,19 +328,19 @@ pipeline {
                         else
                             echo "ℹ️ Servicio ${env.SERVICE_NAME} no está corriendo"
                         fi
-                    ' || echo "⚠️ [PROFILE-SERVICE] No hay servicio previo"
+                    ' || echo "⚠️ [PRODUCT-SERVICE] No hay servicio previo"
                     """
 
                     // 3. Copiar JAR
                     sh """
-                    echo "📦 [PROFILE-SERVICE] Copiando JAR..."
+                    echo "📦 [PRODUCT-SERVICE] Copiando JAR..."
                     scp -i \$SSH_KEY -o StrictHostKeyChecking=no target/${env.JAR_NAME} ${EC2_USER}@${EC2_IP}:${env.SERVICE_PATH}/app.jar
-                    echo "✅ [PROFILE-SERVICE] JAR copiado como app.jar"
+                    echo "✅ [PRODUCT-SERVICE] JAR copiado como app.jar"
                     """
 
                     // 4. Crear servicio systemd
                     def systemdService = """[Unit]
-Description=Spring Boot Profile Service
+Description=Spring Boot Product Service
 After=network.target
 Wants=network-online.target
 After=network-online.target
@@ -309,7 +350,7 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=${env.SERVICE_PATH}
-ExecStart=/usr/bin/java -jar ${env.SERVICE_PATH}/app.jar \\
+ExecStart=/usr/bin/java --enable-preview -jar ${env.SERVICE_PATH}/app.jar \\
     --spring.profiles.active=${env.DEPLOY_ENV} \\
     --logging.level.root=INFO \\
     --logging.file.name=${env.SERVICE_PATH}/${env.SERVICE_NAME}.log
@@ -329,7 +370,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 
 # Variables de entorno
-Environment=JAVA_HOME=/usr/lib/jvm/java-${params.JAVA_VERSION}-openjdk-amd64
 Environment=SPRING_PROFILES_ACTIVE=${env.DEPLOY_ENV}
 
 [Install]
@@ -337,7 +377,7 @@ WantedBy=multi-user.target"""
 
                     // 5. Configurar e iniciar servicio
                     sh """
-                    echo "⚙️ [PROFILE-SERVICE] Configurando servicio systemd..."
+                    echo "⚙️ [PRODUCT-SERVICE] Configurando servicio systemd..."
 
                     # Crear archivo de servicio
                     echo '${systemdService}' | ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} 'sudo tee /etc/systemd/system/${env.SERVICE_NAME}.service > /dev/null'
@@ -356,10 +396,10 @@ WantedBy=multi-user.target"""
                         # Verificar inicio
                         sleep 15
                         if sudo systemctl is-active --quiet ${env.SERVICE_NAME}.service; then
-                            echo "✅ [PROFILE-SERVICE] Servicio iniciado correctamente"
+                            echo "✅ [PRODUCT-SERVICE] Servicio iniciado correctamente"
                             sudo systemctl status ${env.SERVICE_NAME}.service --no-pager -l
                         else
-                            echo "❌ [PROFILE-SERVICE] Error al iniciar servicio"
+                            echo "❌ [PRODUCT-SERVICE] Error al iniciar servicio"
                             sudo systemctl status ${env.SERVICE_NAME}.service --no-pager -l
                             sudo journalctl -u ${env.SERVICE_NAME}.service --since \"5 minutes ago\" --no-pager
                             exit 1
@@ -367,7 +407,7 @@ WantedBy=multi-user.target"""
                     '
                     """
 
-                    echo "✅ [PROFILE-SERVICE] Deploy completado en ${env.DEPLOY_ENV.toUpperCase()}!"
+                    echo "✅ [PRODUCT-SERVICE] Deploy completado en ${env.DEPLOY_ENV.toUpperCase()}!"
                 }
             }
         }
@@ -388,7 +428,7 @@ WantedBy=multi-user.target"""
                         EC2_IP = env.EC2_IP_DEV
                     }
 
-                    echo "🔍 [PROFILE-SERVICE] Verificando deploy..."
+                    echo "🔍 [PRODUCT-SERVICE] Verificando deploy..."
 
                     // Esperar inicio completo
                     sh "sleep 30"
@@ -396,10 +436,10 @@ WantedBy=multi-user.target"""
                     // Verificaciones
                     sh """
                     ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} '
-                        echo "📊 [PROFILE-SERVICE] Estado del servicio:"
+                        echo "📊 [PRODUCT-SERVICE] Estado del servicio:"
                         sudo systemctl status ${env.SERVICE_NAME}.service --no-pager
 
-                        echo "🔌 [PROFILE-SERVICE] Detectando puerto del servicio..."
+                        echo "🔌 [PRODUCT-SERVICE] Detectando puerto del servicio..."
                         # Detectar el puerto
                         SERVICE_PORT=\$(sudo journalctl -u ${env.SERVICE_NAME}.service --since \"10 minutes ago\" --no-pager | grep -o "Tomcat started on port(s): [0-9]*" | grep -o "[0-9]*" | tail -1)
 
@@ -419,8 +459,8 @@ WantedBy=multi-user.target"""
                             curl -s http://localhost:\$SERVICE_PORT/actuator/health
 
                             # Verificar endpoints específicos
-                            echo -e "\n🔐 Verificando endpoints info..."
-                            curl -s -o /dev/null -w "Info endpoint HTTP status: %{http_code}\n" http://localhost:\$SERVICE_PORT/info
+                            echo -e "\n🛍️ Verificando endpoints de productos..."
+                            curl -s -o /dev/null -w "Products endpoint HTTP status: %{http_code}\n" http://localhost:\$SERVICE_PORT/products
 
                             # Guardar puerto en archivo para futuras referencias
                             echo "\$SERVICE_PORT" > ${env.SERVICE_PATH}/service_port.txt
@@ -431,7 +471,7 @@ WantedBy=multi-user.target"""
                             sudo netstat -tuln | grep LISTEN
                         fi
 
-                        echo "📄 [PROFILE-SERVICE] Últimos logs del servicio:"
+                        echo "📄 [PRODUCT-SERVICE] Últimos logs del servicio:"
                         sudo journalctl -u ${env.SERVICE_NAME}.service --since \"5 minutes ago\" --no-pager | tail -20
                     '
                     """
@@ -455,18 +495,19 @@ WantedBy=multi-user.target"""
                     }
 
                     echo """
-🎉 [PROFILE-SERVICE] ¡DEPLOY EXITOSO EN ${env.DEPLOY_ENV.toUpperCase()}!
+🎉 [PRODUCT-SERVICE] ¡DEPLOY EXITOSO EN ${env.DEPLOY_ENV.toUpperCase()}!
 
 📋 Información del servicio:
    • Nombre: ${env.SERVICE_NAME}
    • Servidor: ${EC2_IP}
    • Systemd Service: ${env.SERVICE_NAME}.service
-   • Java Version: ${params.JAVA_VERSION}
+   • Java Version: 21 (requerida por características de preview)
    • Entorno: ${env.DEPLOY_ENV}
 
 🌐 API Endpoints:
    • Base URL: http://${EC2_IP}:[PUERTO]
-   • Profile Info: http://${EC2_IP}:[PUERTO]/info
+   • Productos: http://${EC2_IP}:[PUERTO]/products
+   • Categorías: http://${EC2_IP}:[PUERTO]/categories
    • Swagger: http://${EC2_IP}:[PUERTO]/swagger-ui/index.html
    • Health: http://${EC2_IP}:[PUERTO]/actuator/health
 
@@ -479,14 +520,14 @@ WantedBy=multi-user.target"""
 ✅ Auto-inicio habilitado
 """
                 } else {
-                    echo "✅ [PROFILE-SERVICE] Compilación exitosa - Sin despliegue"
+                    echo "✅ [PRODUCT-SERVICE] Compilación exitosa - Sin despliegue"
                 }
             }
         }
 
         failure {
             echo """
-❌ [PROFILE-SERVICE] PIPELINE FALLIDO
+❌ [PRODUCT-SERVICE] PIPELINE FALLIDO
 
 🔍 Información:
    • Servicio: ${env.SERVICE_NAME}
