@@ -35,7 +35,7 @@ pipeline {
         choice(
             name: 'JAVA_VERSION',
             choices: ['21', '17', '11'],
-            description: 'Versión de Java a usar'
+            description: 'Versión de Java a usar (el código requiere Java 21)'
         )
         booleanParam(
             name: 'SKIP_TESTS',
@@ -102,6 +102,15 @@ pipeline {
                     } else {
                         env.DEPLOY_ENV = params.TARGET_ENVIRONMENT
                         env.NEED_APPROVAL = params.TARGET_ENVIRONMENT == 'prod' ? 'true' : 'false'
+                    }
+
+                    // Verificar si no es Java 21
+                    if (params.JAVA_VERSION != "21") {
+                        echo """
+⚠️ [ADVERTENCIA] Este proyecto requiere Java 21 para compilar correctamente.
+   Estás usando Java ${params.JAVA_VERSION} lo que puede causar errores.
+   Se recomienda cambiar el parámetro JAVA_VERSION a 21.
+"""
                     }
 
                     // Mostrar configuración final
@@ -183,14 +192,17 @@ pipeline {
                         echo "⏩ Tests deshabilitados"
                     fi
 
-                    # Agregar flag para especificar la versión de Java explícitamente
-                    MAVEN_FLAGS="\$MAVEN_FLAGS -Dmaven.compiler.release=${params.JAVA_VERSION} -Dmaven.compiler.source=${params.JAVA_VERSION} -Dmaven.compiler.target=${params.JAVA_VERSION}"
-
                     # Verificar pom.xml para Java 21
                     echo "🔍 Verificando versión de Java en pom.xml..."
                     grep -n "<java.version>" pom.xml || echo "No se encontró java.version"
 
-                    # Compilar
+                    # IMPORTANTE: Agregar flag para habilitar características de preview en Java 21
+                    if [ "${params.JAVA_VERSION}" = "21" ]; then
+                        MAVEN_FLAGS="\$MAVEN_FLAGS --enable-preview"
+                        echo "🔧 Habilitando características de preview para Java 21"
+                    fi
+
+                    # Compilar con la versión de Java especificada en el pom.xml
                     echo "📝 Ejecutando: ./mvnw -B clean package \$MAVEN_FLAGS"
                     ./mvnw -B clean package \$MAVEN_FLAGS
 
@@ -279,18 +291,14 @@ pipeline {
                         which netstat > /dev/null || sudo apt-get install -y net-tools
 
                         # Instalar Java si no existe
-                        if ! which java > /dev/null; then
-                            echo "☕ [PRODUCT-SERVICE] Instalando Java ${params.JAVA_VERSION}..."
-                            if [ "${params.JAVA_VERSION}" = "21" ]; then
-                                # Java 21 puede no estar disponible en apt, usar binarios
-                                curl -sL https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jre_x64_linux_hotspot_21.0.2_13.tar.gz -o /tmp/jdk21.tar.gz
-                                sudo mkdir -p /opt/java/jdk21
-                                sudo tar -xzf /tmp/jdk21.tar.gz -C /opt/java/jdk21 --strip-components=1
-                                sudo update-alternatives --install /usr/bin/java java /opt/java/jdk21/bin/java 2100
-                                rm /tmp/jdk21.tar.gz
-                            else
-                                sudo apt-get update -qq && sudo apt-get install -y openjdk-${params.JAVA_VERSION}-jre-headless
-                            fi
+                        if ! which java > /dev/null || ! java -version 2>&1 | grep -q "version \\"21"; then
+                            echo "☕ [PRODUCT-SERVICE] Instalando Java 21..."
+                            # Java 21 puede no estar disponible en apt, usar binarios
+                            curl -sL https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jre_x64_linux_hotspot_21.0.2_13.tar.gz -o /tmp/jdk21.tar.gz
+                            sudo mkdir -p /opt/java/jdk21
+                            sudo tar -xzf /tmp/jdk21.tar.gz -C /opt/java/jdk21 --strip-components=1
+                            sudo update-alternatives --install /usr/bin/java java /opt/java/jdk21/bin/java 2100
+                            rm /tmp/jdk21.tar.gz
                         fi
 
                         # Verificar versión de Java instalada
@@ -333,7 +341,7 @@ Type=simple
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=${env.SERVICE_PATH}
-ExecStart=/usr/bin/java -jar ${env.SERVICE_PATH}/app.jar \\
+ExecStart=/usr/bin/java --enable-preview -jar ${env.SERVICE_PATH}/app.jar \\
     --spring.profiles.active=${env.DEPLOY_ENV} \\
     --logging.level.root=INFO \\
     --logging.file.name=${env.SERVICE_PATH}/${env.SERVICE_NAME}.log
@@ -484,7 +492,7 @@ WantedBy=multi-user.target"""
    • Nombre: ${env.SERVICE_NAME}
    • Servidor: ${EC2_IP}
    • Systemd Service: ${env.SERVICE_NAME}.service
-   • Java Version: ${params.JAVA_VERSION}
+   • Java Version: 21 (requerida por características de preview)
    • Entorno: ${env.DEPLOY_ENV}
 
 🌐 API Endpoints:
